@@ -1,0 +1,9 @@
+{
+  "name": "Rastreio de carros fora de vaga",
+  "short_name": "Rastreio",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#1f4fd8",
+  "theme_color": "#1f4fd8",
+  "icons": []
+}

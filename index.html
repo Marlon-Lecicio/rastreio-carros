@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="manifest.json"><meta name="theme-color" content="#1f4fd8"><title>Rastreio de carros fora de vaga</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<style>
+:root{--bg:#f5f6f8;--fg:#1b1f24;--card:#fff;--mut:#667085;--bd:#d5d9e0;--pri:#1f4fd8;--ok:#117a45;--warn:#b54708;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--fg:#eceff3;--card:#1b2027;--mut:#9aa4b2;--bd:#2f3743;--pri:#6b8cff;--ok:#4cc38a;--warn:#f0a35e;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#111418;--fg:#eceff3;--card:#1b2027;--mut:#9aa4b2;--bd:#2f3743;--pri:#6b8cff;--ok:#4cc38a;--warn:#f0a35e;color-scheme:dark}
+*{box-sizing:border-box}html,body{margin:0}body{background:var(--bg);color:var(--fg);font:16px/1.4 Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;padding:12px}
+h1{font-size:18px;margin:4px 0 10px}.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tabs button{flex:1;padding:10px;border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:8px;font-size:14px}
+.tabs button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin-bottom:10px}
+label{display:block;font-size:13px;color:var(--mut);margin:8px 0 3px}
+input,select{width:100%;padding:11px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font-size:16px}
+.btn{width:100%;padding:13px;border:0;border-radius:8px;background:var(--pri);color:#fff;font-size:16px;font-weight:bold;margin-top:10px}
+.btn.sec{background:transparent;color:var(--pri);border:1px solid var(--pri)}.btn.sm{width:auto;padding:6px 10px;font-size:13px;margin:0}
+#reader{width:100%;margin-top:8px}.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--bd)}
+.row:first-child{border-top:0}.mut{color:var(--mut);font-size:13px}.cnt{background:var(--pri);color:#fff;border-radius:99px;padding:1px 9px;font-size:13px}
+#msg{min-height:22px;font-size:14px;margin-top:8px}.ok{color:var(--ok)}.er{color:var(--warn)}.hide{display:none}
+</style></head><body>
+<h1>Rastreio de carros fora de vaga</h1>
+<div class="mut" id="mode"></div>
+<div class="tabs"><button data-t="reg" class="on">Registrar</button><button data-t="loc">Onde estão</button><button data-t="his">Histórico</button></div>
+
+<section id="reg">
+ <div class="card">
+  <label>Destino (para onde o carro foi)</label>
+  <select id="dest"></select>
+  <label>Motivo</label>
+  <select id="mot"><option>Atualizar software</option><option>Sem vaga disponível</option><option>Outro</option></select>
+  <label>Vaga de origem (opcional, ex.: PE-AA-126)</label>
+  <input id="orig" autocomplete="off" autocapitalize="characters">
+  <label>VIS (bipe ou digite)</label>
+  <input id="vis" autocomplete="off" autocapitalize="characters" inputmode="text" placeholder="Leitor USB/Bluetooth: clique aqui e bipe">
+  <button class="btn" id="go">Registrar chegada</button>
+  <button class="btn sec" id="cam">Ler com a câmera</button>
+  <div id="reader"></div><div id="msg"></div>
+ </div>
+</section>
+<section id="loc" class="hide"><div class="card"><input id="q" placeholder="Buscar VIS…"></div><div id="locs"></div></section>
+<section id="his" class="hide"><div class="card" id="hl"></div><button class="btn sec" id="exp">Baixar histórico (CSV)</button></section>
+
+<script>
+/* ===== CONFIGURAÇÃO: cole aqui a URL do app da web do Apps Script (termina em /exec) ===== */
+const API_URL="https://script.google.com/macros/s/AKfycbyCl5XPq_cfeguspPfueTC01_O1J1lNUPmoKsHdrn34tXlzBMV33s1fnmamV6Wyfkug/exec";
+/* ========================================================================================= */
+const LOCS=["Bolsão Ilha Almoxarifado","Bolsão Ateliê","Bolsão Lateral Ateliê","Bolsão Traseiro Ateliê","Bolsão KO","Vaga QUAV"];
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let cars={},moves=[],scanner=null,busy=false;
+$("dest").innerHTML=LOCS.map(l=>`<option>${esc(l)}</option>`).join("");
+try{const d=localStorage.getItem("dest");if(d)$("dest").value=d}catch(e){}
+$("dest").onchange=()=>{try{localStorage.setItem("dest",$("dest").value)}catch(e){}};
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
+ document.querySelectorAll(".tabs button").forEach(x=>x.classList.toggle("on",x===b));
+ ["reg","loc","his"].forEach(t=>$(t).classList.toggle("hide",t!==b.dataset.t));render()});
+const key=v=>v.trim().toUpperCase().replace(/[^A-Z0-9_-]/g,"");
+function say(t,c){$("msg").textContent=t;$("msg").className=c||""}
+function fmt(t){try{return new Date(t).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"})}catch(e){return t}}
+const configured=()=>/^https:\/\/script\.google\.com\//.test(API_URL);
+
+async function load(){
+ if(!configured()){$("mode").textContent="Configure a API_URL no index.html (veja o LEIA-ME).";return}
+ try{const r=await fetch(API_URL+"?action=list");const j=await r.json();
+  cars={};(j.cars||[]).forEach(c=>cars[c.vis]=c);moves=j.moves||[];
+  $("mode").textContent="Conectado à planilha · atualizado "+new Date().toLocaleTimeString("pt-BR",{timeStyle:"short"});render();
+ }catch(e){$("mode").textContent="Sem conexão com a planilha. Tentando de novo…"}
+}
+async function register(vis,local,orig,mot,status){
+ const k=key(vis);if(!k){say("Informe o VIS.","er");return}
+ if(!configured()){say("API_URL não configurada.","er");return}
+ const prev=cars[k];
+ say("Salvando…");
+ try{
+  const r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},
+   body:JSON.stringify({action:"register",vis:k,local,origem:orig||"",motivo:mot||"",status:status||"no_local"})});
+  const j=await r.json();if(!j.ok)throw new Error(j.error||"erro");
+  say(`${k} → ${local}${prev&&prev.status==="no_local"&&prev.local!==local?` (estava em ${prev.local})`:""}`,"ok");
+  await load();
+ }catch(e){say("Falha ao salvar: "+e.message+". Tente novamente.","er")}
+}
+$("go").onclick=async()=>{if(busy)return;busy=true;await register($("vis").value,$("dest").value,$("orig").value.trim().toUpperCase(),$("mot").value);busy=false;$("vis").value="";$("vis").focus()};
+$("vis").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();$("go").click()}});
+$("cam").onclick=async()=>{
+ if(scanner){try{await scanner.stop()}catch(e){}scanner=null;$("reader").innerHTML="";$("cam").textContent="Ler com a câmera";return}
+ if(!window.Html5Qrcode){say("Leitor de câmera indisponível. Use o campo VIS.","er");return}
+ try{scanner=new Html5Qrcode("reader");$("cam").textContent="Fechar câmera";
+  await scanner.start({facingMode:"environment"},{fps:10,qrbox:{width:260,height:160}},async txt=>{
+   try{scanner.pause(true)}catch(e){}
+   await register(txt,$("dest").value,$("orig").value.trim().toUpperCase(),$("mot").value);
+   setTimeout(()=>{try{scanner.resume()}catch(e){}},1200);
+  },()=>{});
+ }catch(e){scanner=null;$("reader").innerHTML="";$("cam").textContent="Ler com a câmera";say("Não foi possível abrir a câmera. Use o campo VIS.","er")}
+};
+function render(){
+ const q=key($("q").value||"");const g={};LOCS.forEach(l=>g[l]=[]);
+ Object.values(cars).filter(c=>c.status==="no_local"&&(!q||c.vis.includes(q))).forEach(c=>(g[c.local]=g[c.local]||[]).push(c));
+ $("locs").innerHTML=Object.keys(g).map(l=>`<div class="card"><div class="row"><b>${esc(l)}</b><span class="cnt">${g[l].length}</span></div>`+
+  g[l].sort((a,b)=>String(b.ts).localeCompare(String(a.ts))).map(c=>`<div class="row"><div><b>${esc(c.vis)}</b><div class="mut">${c.origem?"de "+esc(c.origem)+" · ":""}${esc(c.motivo)} · ${fmt(c.ts)}</div></div><button class="btn sm sec" data-r="${esc(c.vis)}">Devolver à vaga</button></div>`).join("")+`</div>`).join("");
+ document.querySelectorAll("[data-r]").forEach(b=>b.onclick=async()=>{
+  const v=b.dataset.r,c=cars[v];const vaga=prompt("Em qual vaga o carro "+v+" foi estacionado?",c.origem||"");if(vaga===null)return;
+  await register(v,vaga.trim().toUpperCase()||"Vaga",vaga.trim().toUpperCase(),"Devolvido à vaga","devolvido")});
+ $("hl").innerHTML=moves.slice(0,200).map(m=>`<div class="row"><div><b>${esc(m.vis)}</b> → ${esc(m.local)}<div class="mut">${m.de?"de "+esc(m.de)+" · ":m.origem?"de "+esc(m.origem)+" · ":""}${esc(m.motivo)}</div></div><span class="mut">${fmt(m.ts)}</span></div>`).join("")||'<span class="mut">Nenhum registro ainda.</span>';
+}
+$("q").oninput=render;
+$("exp").onclick=()=>{
+ const csv="data_hora;vis;destino;de;origem;motivo;status\n"+moves.map(m=>[m.ts,m.vis,m.local,m.de,m.origem,m.motivo,m.status].map(x=>'"'+String(x||"").replace(/"/g,'""')+'"').join(";")).join("\n");
+ const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="historico_carros.csv";a.click()};
+load();setInterval(()=>{if(!document.hidden)load()},15000);
+</script></body></html>
